@@ -14,20 +14,27 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.util.Log;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.app.ActivityCompat;
 
+import com.google.android.gms.location.FusedLocationProviderClient;
+import com.google.android.gms.location.LocationCallback;
 import com.google.android.gms.location.LocationRequest;
+import com.google.android.gms.location.LocationResult;
+import com.google.android.gms.location.LocationServices;
 import com.google.android.gms.location.Priority;
 
 import java.text.DecimalFormat;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-public class GnssService extends Service {
+public class LocationService extends Service {
     private String TAG = "GnssService";
-    private LocationManager locationManager;
-    private LocationListener locationListener;
-    private GnssStatus.Callback gnssStatusCallback;
+    private FusedLocationProviderClient fusedLocationClient;
+    private LocationCallback locationCallback;
+    private ExecutorService executorService;
 
     @Override
     public void onCreate() {
@@ -41,54 +48,45 @@ public class GnssService extends Service {
         if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             // 示例：通过广播传递位置数据
             Intent intent = new Intent("LOCATION_UPDATE_ACTION");
-            locationListener = new LocationListener() {
-                @Override
-                public void onLocationChanged(Location location) {
-                    if (location != null) {
-                        Log.d(TAG, "北斗Location: Latitude = " + location.getLatitude() + ", Longitude = " + location.getLongitude());
-                        Log.d(TAG, "北斗速度 = " + location.getSpeed());
-                        DecimalFormat df = new DecimalFormat("0.##");
-                        String speedStr = df.format(location.getSpeed());
-                        intent.putExtra("latitude", location.getLatitude());
-                        intent.putExtra("longitude", location.getLongitude());
-                        intent.putExtra("speed", speedStr);
-                        intent.putExtra("type", "北斗");
-                        sendBroadcast(intent);
-                    }
-                }
-            };
 
-
-            locationManager = (LocationManager) this.getSystemService(Context.LOCATION_SERVICE);
-
-            // 创建一个在主线程执行的 Executor
-            Executor executor = new Executor() {
-                private final Handler handler = new Handler(Looper.getMainLooper());
-
-                @Override
-                public void execute(Runnable command) {
-                    handler.post(command);
-                }
-            };
-
+            fusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
+            executorService = Executors.newSingleThreadExecutor();
             try {
                 LocationRequest.Builder builder = new LocationRequest.Builder(
                         Priority.PRIORITY_HIGH_ACCURACY, // 定位优先级
                         1000L // 更新间隔，单位为毫秒
                 );
-                builder
-                        // 设置最快更新间隔，单位为毫秒
-                        .setMinUpdateIntervalMillis(500L)
-                        // 设置最大更新延迟，单位为毫秒
-                        .setMaxUpdateDelayMillis(2000L)
-                        // 设置定位请求的持续时间，单位为毫秒
-                        .setDurationMillis(30000L)
-                        // 设置定位请求的最大更新次数
-                        .setMaxUpdates(10);
+
+                builder.setMinUpdateIntervalMillis(500L);
+                // 设置最大更新延迟，单位为毫秒
+                builder.setMaxUpdateDelayMillis(1000L);
 
                 LocationRequest locationRequest = builder.build();
-                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0, 0, locationListener);
-                locationManager.registerGnssStatusCallback(executor, gnssStatusCallback);
+
+                locationCallback = new LocationCallback() {
+                    @Override
+                    public void onLocationResult(@NonNull LocationResult locationResult) {
+                        for (Location location : locationResult.getLocations()) {
+                            // 处理位置更新
+                            if (location != null) {
+                                Log.d(TAG, "融合Location: Latitude = " + location.getLatitude() + ", Longitude = " + location.getLongitude());
+                                Log.d(TAG, "融合速度米/s = " + location.getSpeed());
+                                float speed = location.getSpeed() * 3.6f;
+                                DecimalFormat df = new DecimalFormat("0.##");
+                                String speedStr = df.format(speed);
+                                intent.putExtra("latitude", location.getLatitude());
+                                intent.putExtra("longitude", location.getLongitude());
+                                intent.putExtra("speed", speedStr);
+                                intent.putExtra("type", "北斗");
+                                sendBroadcast(intent);
+                            }
+                        }
+                    }
+                };
+
+                // 请求定位更新
+                fusedLocationClient.requestLocationUpdates(locationRequest, executorService, locationCallback);
+
             } catch (SecurityException e) {
                 Log.e(TAG, "SecurityException while starting location updates: " + e.getMessage());
             }
@@ -103,10 +101,8 @@ public class GnssService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
-        if (locationManager != null) {
-            locationManager.removeUpdates(locationListener);
-            locationManager.unregisterGnssStatusCallback(gnssStatusCallback);
-        }
+        fusedLocationClient.removeLocationUpdates(locationCallback);
+        executorService.shutdown();
     }
 
 

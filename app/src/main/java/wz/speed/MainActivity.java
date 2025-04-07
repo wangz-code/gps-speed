@@ -1,8 +1,9 @@
-package wz.notifi;
+package wz.speed;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.AlertDialog;
+import android.app.Notification;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGatt;
@@ -28,14 +29,22 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
+
+import com.baidu.location.BDAbstractLocationListener;
+import com.baidu.location.BDLocation;
+import com.baidu.location.LocationClient;
+import com.baidu.location.LocationClientOption;
 
 import java.nio.charset.StandardCharsets;
+import java.text.DecimalFormat;
 
-import wz.notifi.databinding.ActivityMainBinding;
+import pub.devrel.easypermissions.EasyPermissions;
+import wz.speed.databinding.ActivityMainBinding;
+
 
 public class MainActivity extends AppCompatActivity {
     private static final int PERMISSION_REQUEST_CODE = 100;
+    private static final int REQUEST_BACKGROUND_LOCATION = 101;
     private String TAG = "MainActivity";
 
     private ActivityMainBinding binding;
@@ -52,61 +61,65 @@ public class MainActivity extends AppCompatActivity {
     private BluetoothDevice connectDevice = null;
     private final Handler handler = new Handler();
     private Context context;
+    private PermissionUtils permissionUtils;
+
+    private int rLocationCheck = R.id.location_gnss;
+    //  百度定位
+    private LocationClient mClient;
+    private BaiduLocationListener baiduLocationListener;
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+
         context = this;
         binding = ActivityMainBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
         setSupportActionBar(binding.toolbar);
 
+        permissionUtils = new PermissionUtils(this);
 
         Log.d(TAG, "onCreate: 注册广播");
         // 注册广播
         registerReceiver(locationReceiver, new IntentFilter("LOCATION_UPDATE_ACTION"));
+
+        // 初始化视图监听
         initActionView();
+
+        // 请求普通权限
+        String[] permissions = {
+                android.Manifest.permission.ACCESS_FINE_LOCATION,
+                android.Manifest.permission.BLUETOOTH_ADMIN,
+                android.Manifest.permission.BLUETOOTH_CONNECT,
+                android.Manifest.permission.BLUETOOTH_SCAN,
+        };
+
+
+        permissionUtils.requestPermissions(
+                permissions,
+                "需要定位和蓝牙权限才能使用完整功能",
+                new PermissionUtils.PermissionCallback() {
+                    @Override
+                    public void onPermissionsGranted() {
+//                        Toast.makeText(MainActivity.this, "权限授予成功", Toast.LENGTH_SHORT).show();
+                    }
+
+                    @Override
+                    public void onPermissionsDenied() {
+                        Toast.makeText(MainActivity.this, "权限被拒绝，部分功能无法使用", Toast.LENGTH_SHORT).show();
+                    }
+
+                    @Override
+                    public void onPermanentlyDenied() {
+                        Toast.makeText(MainActivity.this, "请手动授予必要权限", Toast.LENGTH_SHORT).show();
+                    }
+                }
+        );
     }
 
-    public void startGps(boolean isOpen) {
-        // 获取 LocationManager 实例
-        LocationManager locationManager = (LocationManager) getSystemService(this.LOCATION_SERVICE);
-        boolean isGpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
-        if (!isGpsEnabled) {
-            new AlertDialog.Builder(this)
-                    .setTitle("需要开启GPS")
-                    .setMessage("请前往设置中启用定位服务")
-                    .setPositiveButton("去设置", (dialog, which) -> {
-                        startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS));
-                    })
-                    .setNegativeButton("取消", null)
-                    .show();
-        }
-
-        if (isOpen) {
-            binding.speedText.setText("开始");
-            // 请求权限
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-                    != PackageManager.PERMISSION_GRANTED) {
-
-                ActivityCompat.requestPermissions(this,
-                        new String[]{Manifest.permission.ACCESS_FINE_LOCATION,
-                                Manifest.permission.ACCESS_BACKGROUND_LOCATION},
-                        PERMISSION_REQUEST_CODE);
-
-                Log.d(TAG, "onCreate: 请求权限");
-            } else {
-                Log.d(TAG, "onCreate: 开始服务");
-                startLocationService();
-            }
-
-        } else {
-            binding.speedText.setText("结束");
-
-        }
-    }
 
     private void initBluetooth() {
         bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
@@ -269,13 +282,29 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onClick(View view) {
                 boolean isOpen = binding.switchBle.isChecked();
-                startGps(isOpen);
+                LocationManager locationManager = (LocationManager) getSystemService(context.LOCATION_SERVICE);
+                boolean isGpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
+                Log.d(TAG, "isOpen: " + isOpen);
                 if (isOpen) {
-
-                    if (connectDevice == null) initBluetooth();
-                    if (connectDevice != null) connectToDevice(connectDevice);
+                    if (!isGpsEnabled) {
+                        new AlertDialog.Builder(context)
+                                .setTitle("需要开启GPS")
+                                .setMessage("请前往设置中启用定位服务")
+                                .setPositiveButton("去设置", (dialog, which) -> {
+                                    startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS));
+                                })
+                                .setNegativeButton("取消", null)
+                                .show();
+                        return;
+                    }
+                    binding.speedText.setText("开始");
+                    binding.beidoucount.setText("正在搜星...");
+                    startLocationService();
+                } else {
+                    binding.speedText.setText("结束");
+                    binding.beidoucount.setText("服务停止");
+                    stopLocationService();
                 }
-                Toast.makeText(context, "蓝牙下发: " + (isOpen ? "开启" : "关闭"), Toast.LENGTH_SHORT).show();
             }
         });
 
@@ -301,6 +330,18 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
+
+        // 设置 RadioGroup 的选中状态监听器
+        binding.rLocation.check(rLocationCheck);
+        binding.rLocation.setOnCheckedChangeListener(new RadioGroup.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(RadioGroup group, int checkedId) {
+                stopLocationService();
+                rLocationCheck = checkedId;
+                startLocationService();
+            }
+        });
+
     }
 
 
@@ -308,18 +349,76 @@ public class MainActivity extends AppCompatActivity {
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
                                            @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                startLocationService();
-            }
-        }
+        EasyPermissions.onRequestPermissionsResult(requestCode, permissions, grantResults, this);
     }
 
-    private void startLocationService() {
-        Intent serviceIntent = new Intent(this, LocationService.class);
-        startService(serviceIntent);
-        Log.d(TAG, "onReceive: 开启服务");
 
+    private void initBaiduLocation() {
+        NotificationUtils notificationUtils = new NotificationUtils(this);
+        Notification.Builder builder = notificationUtils.getAndroidChannelNotification
+                ("适配android 8限制后台定位功能", "正在后台定位");
+        Notification mNotification = builder.build();
+        mNotification.defaults = Notification.DEFAULT_SOUND; //设置为默认的声音
+        try {
+            LocationClient.setAgreePrivacy(true);
+            // 创建定位客户端
+            mClient = new LocationClient(this);
+            baiduLocationListener = new BaiduLocationListener();
+            // 注册定位监听
+            mClient.registerLocationListener(baiduLocationListener);
+            LocationClientOption mOption = new LocationClientOption();
+            // 可选，默认0，即仅定位一次，设置发起连续定位请求的间隔需要大于等于1000ms才是有效的
+            mOption.setScanSpan(1000);
+            // 可选，默认gcj02，设置返回的定位结果坐标系，如果配合百度地图使用，建议设置为bd09ll;
+            mOption.setCoorType("bd09ll");
+            mOption.setLocationMode(LocationClientOption.LocationMode.Hight_Accuracy);
+            mOption.setOpenGnss(true);//  设置是否使用卫星定位，默认false
+            mOption.setLocationNotify(true); // 设置是否当卫星定位有效时按照1S/1次频率输出卫星定位结果
+            // 设置定位参数
+            mClient.setLocOption(mOption);
+            mClient.enableLocInForeground(1, mNotification);
+            mClient.start();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+    }
+
+
+    private void startLocationService() {
+        if (connectDevice == null) initBluetooth();
+        if (connectDevice != null) connectToDevice(connectDevice);
+        String tag = "";
+        if (rLocationCheck == R.id.location_gnss) {
+            tag = "GNSS";
+            Intent serviceIntent = new Intent(this, LocationService.class);
+            startService(serviceIntent);
+        }
+        if (rLocationCheck == R.id.location_baidu) {
+            tag = "百度";
+            initBaiduLocation();
+        }
+        Log.d(TAG, "开启服务:" + tag);
+    }
+
+    private void stopLocationService() {
+        disconnect();
+        String tag = "";
+        if (rLocationCheck == R.id.location_gnss) {
+            tag = "GNSS";
+            Intent serviceIntent = new Intent(this, LocationService.class);
+            stopService(serviceIntent);
+        }
+        if (mClient != null && rLocationCheck == R.id.location_baidu) {
+            tag = "百度";
+            // 关闭前台定位服务
+            mClient.disableLocInForeground(true);
+            // 取消之前注册的 BDAbstractLocationListener 定位监听函数
+            mClient.unRegisterLocationListener(baiduLocationListener);
+            // 停止定位sdk
+            mClient.stop();
+        }
+        Log.d(TAG, "onReceive: 停止服务:" + tag);
     }
 
     // 在 Activity 中注册广播接收器
@@ -327,8 +426,11 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onReceive(Context context, Intent intent) {
             String speedStr = intent.getStringExtra("speed");
+            String beidouCount = intent.getStringExtra("beidoucount");
+            String type = intent.getStringExtra("type");
             binding.speedText.setText(speedStr);
-            Log.d(TAG, "onReceive:速度" + speedStr + "km/h");
+            binding.beidoucount.setText(beidouCount);
+            Log.d(TAG, "onReceive:速度" + speedStr + "km/h," + "type:" + type);
 
             boolean isOpen = binding.switchBle.isChecked();
             if (isOpen && !latestSpeedData.equals(speedStr)) {
@@ -338,9 +440,31 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
+
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        disconnect();
+        stopLocationService();
+    }
+
+
+    class BaiduLocationListener extends BDAbstractLocationListener {
+
+        // 示例：通过广播传递位置数据
+        Intent intent = new Intent("LOCATION_UPDATE_ACTION");
+
+        @Override
+        public void onReceiveLocation(BDLocation location) {
+            if (location == null) {
+                return;
+            }
+            DecimalFormat df = new DecimalFormat("0.##");
+            String speedStr = df.format(location.getSpeed());
+            intent.putExtra("latitude", location.getLatitude());
+            intent.putExtra("longitude", location.getLongitude());
+            intent.putExtra("speed", speedStr);
+            intent.putExtra("type", "百度");
+            sendBroadcast(intent);
+        }
     }
 }
