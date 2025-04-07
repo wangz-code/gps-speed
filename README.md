@@ -2,6 +2,7 @@
 <div align="center"> 
 <h1>gps-speed</h1>
 </div>
+
 ## Introduction
 安卓APP 使用GPS 获取当前的移动速度
 支持定位切换,后台持续定位, 
@@ -12,7 +13,8 @@
 - 简单易懂的蓝牙通信指令 控制 led 和数码管
 
 
-<p align="center">
-    <img alt="speed" width="50%" src="https://github.com/WangSunio/img/blob/main/images/speed.png">
-    <img alt="auth" width="50%" src="https://github.com/WangSunio/img/blob/main/images/auth.png">
+## Preview
+<p align="left">
+    <img alt="speed" width="30%" src="https://github.com/WangSunio/img/blob/main/images/speed.png">
+    <img alt="auth" width="30%" src="https://github.com/WangSunio/img/blob/main/images/auth.png">
 </p>
